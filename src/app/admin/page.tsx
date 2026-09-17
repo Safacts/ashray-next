@@ -33,6 +33,13 @@ import {
   AlertTriangle,
   FileText,
   Calendar,
+  BedDouble,
+  Plus,
+  UserCheck,
+  MessageSquare,
+  ClipboardList,
+  Star,
+  StarOff,
 } from "lucide-react";
 
 type HostelRow = { name: string; default_fee: number | null; qr_code_url: string | null; upi_id: string | null };
@@ -51,7 +58,6 @@ type StudentRow = {
   status?: string | null;
   photo_url?: string | null;
   created_at?: string;
-  // old optional fields
   address?: string | null;
   adhar_number?: string | null;
 };
@@ -69,7 +75,10 @@ type PaymentRow = {
 type ExpenseRow = { id: string; amount: number; description: string; date?: string; expense_date?: string };
 type DueRow = { id: string; amount: number; status: string; month: string; hostel_id: string; student_id: string; due_date?: string };
 type BedRow = { id: string; room_id: string; bed_no?: string; student_id?: string | null; status?: string | null };
-type RoomRow = { id: string; hostel_id: string; room_no: string; floor?: string | number; sharing_type?: string; status?: string };
+type RoomRow = { id: string; hostel_id: string; room_no: string; floor?: string | number; sharing_type?: string | number | null; rent?: number | null; status?: string };
+type ComplaintRow = { id: number; hostel_id: string | null; student_id: string | null; category: string | null; description: string | null; status: string; assigned_to: string | null; created_at: string; students?: { name?: string; phone?: string } | null };
+type EnquiryRow = { id: number; name: string | null; phone: string | null; occupation: string | null; move_in: string | null; message: string | null; contacted: boolean; created_at: string };
+type ReviewRow = { id: number; name: string; rating: number; text: string; approved: boolean; source?: string | null; created_at: string };
 
 const getStudentName = (s: StudentRow) => s.name ?? s.full_name ?? "Student";
 const getStudentPhone = (s: StudentRow) => s.phone ?? s.mobile_number ?? "";
@@ -108,7 +117,11 @@ export default function AdminPage() {
   const [rooms, setRooms] = useState<RoomRow[]>([]);
   const [beds, setBeds] = useState<BedRow[]>([]);
 
-  const [activeTab, setActiveTab] = useState<"analytics" | "detailed-analytics" | "students" | "payments" | "expenses" | "dues" | "rooms">("analytics");
+  const [complaints, setComplaints] = useState<ComplaintRow[]>([]);
+  const [enquiries, setEnquiries] = useState<EnquiryRow[]>([]);
+  const [reviews, setReviews] = useState<ReviewRow[]>([]);
+
+  const [activeTab, setActiveTab] = useState<"analytics" | "detailed-analytics" | "students" | "payments" | "expenses" | "dues" | "rooms" | "complaints" | "enquiries" | "reviews">("analytics");
   const [searchTerm, setSearchTerm] = useState("");
   const [filterRoom, setFilterRoom] = useState("all");
   const [filterStatus, setFilterStatus] = useState("all");
@@ -130,6 +143,13 @@ export default function AdminPage() {
 
   const [expenseModalOpen, setExpenseModalOpen] = useState(false);
   const [expenseData, setExpenseData] = useState({ amount: "", description: "", date: new Date().toISOString().split("T")[0] });
+
+  // Rooms CRUD state
+  const [newRoom, setNewRoom] = useState({ floor: "Ground", room_no: "", sharing_type: "2", rent: "" });
+  const [roomCreating, setRoomCreating] = useState(false);
+  const [complaintFilter, setComplaintFilter] = useState("all");
+  const [enquiryFilter, setEnquiryFilter] = useState("all");
+  const [reviewFilter, setReviewFilter] = useState("all");
 
   const fetchDashboardData = async () => {
     setLoading(true);
@@ -163,7 +183,6 @@ export default function AdminPage() {
       setPendingPayments((payPending ?? []) as PaymentRow[]);
 
       const { data: expData } = await supabase.from("expenses").select("*").eq("hostel_id", hostelId).order("date", { ascending: false });
-      // fallback to expense_date if date missing
       const expensesList = ((expData ?? []) as unknown as ExpenseRow[]).map((e) => ({
         ...e,
         date: (e as ExpenseRow).date ?? (e as ExpenseRow).expense_date ?? new Date().toISOString().split("T")[0],
@@ -181,15 +200,25 @@ export default function AdminPage() {
       const { data: duesData } = await supabase.from("dues").select("*").eq("hostel_id", hostelId).order("month", { ascending: false });
       setDues((duesData ?? []) as DueRow[]);
 
-      const { data: roomsData } = await supabase.from("rooms").select("*").eq("hostel_id", hostelId);
+      const { data: roomsData } = await supabase.from("rooms").select("*").eq("hostel_id", hostelId).order("room_no", { ascending: true });
       setRooms((roomsData ?? []) as RoomRow[]);
       const { data: bedsData } = await supabase.from("beds").select("*");
-      // filter beds by rooms of this hostel
       const roomIds = new Set(((roomsData ?? []) as RoomRow[]).map((r) => r.id));
       const filteredBeds = ((bedsData ?? []) as BedRow[]).filter((b) => roomIds.has(b.room_id));
       setBeds(filteredBeds);
 
-      // 30-day proof cleanup (best-effort, silent)
+      // complaints
+      const { data: complaintsData } = await supabase.from("complaints").select("*, students(name, phone)").eq("hostel_id", hostelId).order("created_at", { ascending: false });
+      setComplaints((complaintsData ?? []) as ComplaintRow[]);
+
+      // enquiries (global, no hostel_id)
+      const { data: enqData } = await supabase.from("enquiries").select("*").order("created_at", { ascending: false }).limit(50);
+      setEnquiries((enqData ?? []) as EnquiryRow[]);
+
+      // reviews
+      const { data: revwData } = await supabase.from("reviews").select("*").order("created_at", { ascending: false }).limit(50);
+      setReviews((revwData ?? []) as ReviewRow[]);
+
       const thirtyDaysAgo = new Date();
       thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
       supabase
@@ -291,8 +320,8 @@ export default function AdminPage() {
     today.setHours(0, 0, 0, 0);
     nextBill.setHours(0, 0, 0, 0);
     const daysLeft = Math.ceil((nextBill.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
-    let statusColor = daysLeft <= 3 ? "text-red-600 bg-red-50" : daysLeft <= 7 ? "text-amber-600 bg-amber-50" : "text-emerald-600 bg-emerald-50";
-    let riskLevel: "critical" | "warning" | "safe" = daysLeft <= 3 ? "critical" : daysLeft <= 7 ? "warning" : "safe";
+    const statusColor = daysLeft <= 3 ? "text-red-600 bg-red-50" : daysLeft <= 7 ? "text-amber-600 bg-amber-50" : "text-emerald-600 bg-emerald-50";
+    const riskLevel: "critical" | "warning" | "safe" = daysLeft <= 3 ? "critical" : daysLeft <= 7 ? "warning" : "safe";
     return { nextBillDate: nextBill.toLocaleDateString("en-GB", { day: "numeric", month: "short" }), daysLeft, statusColor, riskLevel };
   };
 
@@ -538,6 +567,142 @@ export default function AdminPage() {
     toast.success("Report downloaded!");
   };
 
+  // Rooms CRUD handlers
+  const handleCreateRoom = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const hostelId = localStorage.getItem("admin_hostel_id");
+    if (!hostelId) return;
+    if (!newRoom.room_no.trim()) return toast.error("Room number required");
+    const sharing = parseInt(newRoom.sharing_type);
+    const rentVal = parseInt(newRoom.rent || "0");
+    if (!sharing || sharing < 1 || sharing > 6) return toast.error("Sharing must be 1-6");
+    setRoomCreating(true);
+    try {
+      const res = await fetch("/api/rooms", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hostel_id: hostelId, floor: newRoom.floor, room_no: newRoom.room_no.trim(), sharing_type: sharing, rent: rentVal }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error((j as { error?: string }).error ?? "Failed to create room");
+      toast.success(`Room ${newRoom.room_no} created with ${sharing} bed(s)`);
+      setNewRoom({ floor: "Ground", room_no: "", sharing_type: "2", rent: "" });
+      fetchDashboardData();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to create room");
+    } finally {
+      setRoomCreating(false);
+    }
+  };
+
+  const handleAssignBed = async (bedId: string, studentId: string) => {
+    if (!studentId) return toast.error("Select a student");
+    const hostelId = localStorage.getItem("admin_hostel_id");
+    void hostelId;
+    const toastId = toast.loading("Assigning bed…");
+    try {
+      // check if student already has a bed — vacate old first
+      const stu = students.find((s) => s.id === studentId);
+      const oldBedId = stu?.bed_id ?? null;
+      if (oldBedId && oldBedId !== bedId) {
+        await supabase.from("beds").update({ student_id: null, status: "vacant" }).eq("id", oldBedId);
+      }
+      // check if bed already occupied — vacate previous occupant
+      const bed = beds.find((b) => b.id === bedId);
+      if (bed?.student_id && bed.student_id !== studentId) {
+        await supabase.from("students").update({ bed_id: null }).eq("id", bed.student_id);
+      }
+      const { error: bedErr } = await supabase.from("beds").update({ student_id: studentId, status: "occupied" }).eq("id", bedId);
+      if (bedErr) throw bedErr;
+      const roomForBed = rooms.find((r) => r.id === (beds.find((b) => b.id === bedId)?.room_id ?? ""));
+      const roomNo = roomForBed?.room_no ?? "";
+      const { error: stuErr } = await supabase.from("students").update({ bed_id: bedId, room: roomNo }).eq("id", studentId);
+      if (stuErr) throw stuErr;
+      toast.success("Bed assigned", { id: toastId });
+      fetchDashboardData();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Assign failed", { id: toastId });
+    }
+  };
+
+  const handleVacateBed = async (bedId: string) => {
+    if (!confirm("Vacate this bed?")) return;
+    const toastId = toast.loading("Vacating bed…");
+    try {
+      const bed = beds.find((b) => b.id === bedId);
+      const studentId = bed?.student_id;
+      const { error: bedErr } = await supabase.from("beds").update({ student_id: null, status: "vacant" }).eq("id", bedId);
+      if (bedErr) throw bedErr;
+      if (studentId) {
+        await supabase.from("students").update({ bed_id: null }).eq("id", studentId);
+      }
+      toast.success("Bed vacated", { id: toastId });
+      fetchDashboardData();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Vacate failed", { id: toastId });
+    }
+  };
+
+  const handleDeleteRoom = async (roomId: string) => {
+    if (!confirm("Delete room and all its beds? Students in beds will be unassigned.")) return;
+    const toastId = toast.loading("Deleting room…");
+    try {
+      // vacate beds first (FK cascade will handle but we want to clear student.bed_id)
+      const roomBeds = beds.filter((b) => b.room_id === roomId);
+      for (const b of roomBeds) {
+        if (b.student_id) await supabase.from("students").update({ bed_id: null }).eq("id", b.student_id);
+      }
+      const { error } = await supabase.from("rooms").delete().eq("id", roomId);
+      if (error) throw error;
+      toast.success("Room deleted", { id: toastId });
+      fetchDashboardData();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Delete failed", { id: toastId });
+    }
+  };
+
+  const handleComplaintPatch = async (id: number, patch: { status?: string; assigned_to?: string }) => {
+    const toastId = toast.loading("Updating complaint…");
+    try {
+      const res = await fetch("/api/complaints", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, ...patch }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error((j as { error?: string }).error ?? "Update failed");
+      toast.success("Complaint updated", { id: toastId });
+      fetchDashboardData();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Update failed", { id: toastId });
+    }
+  };
+
+  const handleEnquiryContacted = async (id: number, contacted: boolean) => {
+    const { error } = await supabase.from("enquiries").update({ contacted }).eq("id", id);
+    if (!error) {
+      toast.success(contacted ? "Marked contacted" : "Marked pending");
+      fetchDashboardData();
+    } else toast.error("Update failed");
+  };
+
+  const handleReviewApprove = async (id: number, approved: boolean) => {
+    const { error } = await supabase.from("reviews").update({ approved }).eq("id", id);
+    if (!error) {
+      toast.success(approved ? "Review approved" : "Review unapproved");
+      fetchDashboardData();
+    } else toast.error("Update failed");
+  };
+
+  const handleReviewDelete = async (id: number) => {
+    if (!confirm("Delete this review permanently?")) return;
+    const { error } = await supabase.from("reviews").delete().eq("id", id);
+    if (!error) {
+      toast.success("Review deleted");
+      fetchDashboardData();
+    } else toast.error("Delete failed");
+  };
+
   const uniqueRooms = ["all", ...Array.from(new Set(students.map((s) => getStudentRoom(s))))].sort();
   const filteredStudents = students.filter((s) => {
     const name = getStudentName(s).toLowerCase();
@@ -549,8 +714,12 @@ export default function AdminPage() {
     return matchSearch && matchStatus && matchRoom;
   });
 
-  const occ = occupancySummary(rooms, beds);
+  const occ = occupancySummary(rooms as unknown as import("@/lib/pg-engine").Room[], beds as unknown as import("@/lib/pg-engine").Bed[]);
   const dSummary = duesSummary(dues.map((d) => ({ ...d })));
+
+  const filteredComplaints = complaints.filter((c) => complaintFilter === "all" || c.status === complaintFilter);
+  const filteredEnquiries = enquiries.filter((e) => (enquiryFilter === "all" ? true : enquiryFilter === "contacted" ? e.contacted : !e.contacted));
+  const filteredReviews = reviews.filter((r) => (reviewFilter === "all" ? true : reviewFilter === "approved" ? r.approved : !r.approved));
 
   if (loading) {
     return (
@@ -581,13 +750,16 @@ export default function AdminPage() {
             </button>
           </div>
 
-          <div className="flex bg-gray-100 p-1 rounded-xl overflow-x-auto gap-1">
+          <div className="flex bg-gray-100 p-1 rounded-xl overflow-x-auto gap-1 scrollbar-thin">
             <button onClick={() => setActiveTab("analytics")} className={`px-4 py-2 text-sm font-bold rounded-lg whitespace-nowrap ${activeTab === "analytics" || activeTab === "detailed-analytics" ? "bg-white text-indigo-600 shadow-sm" : "text-gray-500"}`}>Analytics</button>
             <button onClick={() => setActiveTab("students")} className={`px-4 py-2 text-sm font-bold rounded-lg whitespace-nowrap ${activeTab === "students" ? "bg-white text-indigo-600 shadow-sm" : "text-gray-500"}`}>Students ({students.length})</button>
             <button onClick={() => setActiveTab("payments")} className={`px-4 py-2 text-sm font-bold rounded-lg whitespace-nowrap relative ${activeTab === "payments" ? "bg-white text-indigo-600 shadow-sm" : "text-gray-500"}`}>Approvals {pendingPayments.length > 0 && <span className="ml-1 bg-red-500 text-white text-[10px] px-2 py-0.5 rounded-full">{pendingPayments.length}</span>}</button>
             <button onClick={() => setActiveTab("expenses")} className={`px-4 py-2 text-sm font-bold rounded-lg whitespace-nowrap ${activeTab === "expenses" ? "bg-white text-indigo-600 shadow-sm" : "text-gray-500"}`}>Expenses</button>
             <button onClick={() => setActiveTab("dues")} className={`px-4 py-2 text-sm font-bold rounded-lg whitespace-nowrap ${activeTab === "dues" ? "bg-white text-indigo-600 shadow-sm" : "text-gray-500"}`}>Dues</button>
             <button onClick={() => setActiveTab("rooms")} className={`px-4 py-2 text-sm font-bold rounded-lg whitespace-nowrap ${activeTab === "rooms" ? "bg-white text-indigo-600 shadow-sm" : "text-gray-500"}`}>Rooms/Beds</button>
+            <button onClick={() => setActiveTab("complaints")} className={`px-4 py-2 text-sm font-bold rounded-lg whitespace-nowrap ${activeTab === "complaints" ? "bg-white text-indigo-600 shadow-sm" : "text-gray-500"}`}>Complaints {complaints.filter((c) => c.status==="open").length>0 && <span className="ml-1 bg-amber-500 text-white text-[10px] px-2 py-0.5 rounded-full">{complaints.filter((c)=>c.status==="open").length}</span>}</button>
+            <button onClick={() => setActiveTab("enquiries")} className={`px-4 py-2 text-sm font-bold rounded-lg whitespace-nowrap ${activeTab === "enquiries" ? "bg-white text-indigo-600 shadow-sm" : "text-gray-500"}`}>Enquiries {enquiries.filter((e)=>!e.contacted).length>0 && <span className="ml-1 bg-blue-500 text-white text-[10px] px-2 py-0.5 rounded-full">{enquiries.filter((e)=>!e.contacted).length}</span>}</button>
+            <button onClick={() => setActiveTab("reviews")} className={`px-4 py-2 text-sm font-bold rounded-lg whitespace-nowrap ${activeTab === "reviews" ? "bg-white text-indigo-600 shadow-sm" : "text-gray-500"}`}>Reviews</button>
           </div>
         </div>
       </div>
@@ -910,28 +1082,188 @@ export default function AdminPage() {
               <div className="bg-white p-4 rounded-2xl border text-center"><p className="text-xs text-gray-500">Vacant</p><p className="text-xl font-bold text-gray-700">{occ.vacant}</p></div>
               <div className="bg-white p-4 rounded-2xl border text-center"><p className="text-xs text-gray-500">Booked</p><p className="text-xl font-bold text-amber-600">{occ.booked}</p></div>
             </div>
+
+            <div className="bg-white rounded-2xl border border-gray-100 p-5">
+              <h3 className="font-bold text-gray-900 flex items-center gap-2 mb-3"><Plus size={18} className="text-indigo-500" /> Add Room</h3>
+              <form onSubmit={handleCreateRoom} className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+                <select value={newRoom.floor} onChange={(e) => setNewRoom({ ...newRoom, floor: e.target.value })} className="bg-gray-50 border border-gray-200 rounded-xl px-3 py-2.5 text-sm font-medium">
+                  <option value="Ground">Ground</option>
+                  <option value="First">First</option>
+                  <option value="Second">Second</option>
+                  <option value="Third">Third</option>
+                </select>
+                <input placeholder="Room No (e.g. 104)" value={newRoom.room_no} onChange={(e) => setNewRoom({ ...newRoom, room_no: e.target.value })} className="bg-gray-50 border border-gray-200 rounded-xl px-3 py-2.5 text-sm font-bold" required />
+                <select value={newRoom.sharing_type} onChange={(e) => setNewRoom({ ...newRoom, sharing_type: e.target.value })} className="bg-gray-50 border border-gray-200 rounded-xl px-3 py-2.5 text-sm">
+                  <option value="1">Single (1)</option>
+                  <option value="2">Double (2)</option>
+                  <option value="3">Triple (3)</option>
+                  <option value="4">4-share</option>
+                  <option value="6">6-share</option>
+                </select>
+                <input type="number" placeholder="Rent ₹" value={newRoom.rent} onChange={(e) => setNewRoom({ ...newRoom, rent: e.target.value })} className="bg-gray-50 border border-gray-200 rounded-xl px-3 py-2.5 text-sm font-bold" required />
+                <button disabled={roomCreating} className="bg-indigo-600 text-white rounded-xl font-bold text-sm py-2.5 flex items-center justify-center gap-2 disabled:opacity-60">
+                  {roomCreating ? <Loader2 className="animate-spin w-4 h-4" /> : <Plus size={16} />} Create
+                </button>
+              </form>
+              <p className="text-xs text-gray-400 mt-2">Auto-creates N beds (A,B,C…) per sharing. API: POST /api/rooms</p>
+            </div>
+
             <div className="bg-white rounded-2xl border overflow-hidden">
-              <div className="p-4 border-b font-bold text-sm">Rooms · {rooms.length} total</div>
-              {rooms.length === 0 ? <p className="p-6 text-sm text-gray-400 text-center">No rooms configured. Add rooms in Supabase (rooms table).</p> : <div className="divide-y">
-                {rooms.map((r) => (
-                  <div key={r.id} className="p-4 flex justify-between items-center text-sm">
-                    <div><p className="font-bold">Room {r.room_no} <span className="text-xs text-gray-500">· Floor {r.floor ?? "-"} · {r.sharing_type ?? "-"}</span></p><p className="text-xs text-gray-500">{r.id.slice(0, 8)}</p></div>
-                    <span className="text-xs font-bold px-2 py-1 rounded bg-gray-100">{r.status ?? "active"}</span>
-                  </div>
-                ))}
+              <div className="p-4 border-b font-bold text-sm flex justify-between items-center"><span>Rooms · {rooms.length} total</span><span className="text-xs text-gray-500 font-normal">via /api/rooms?hostel_id=</span></div>
+              {rooms.length === 0 ? <p className="p-6 text-sm text-gray-400 text-center">No rooms configured. Add one above.</p> : <div className="divide-y">
+                {rooms.map((r) => {
+                  const roomBeds = beds.filter((b) => b.room_id === r.id);
+                  return (
+                    <div key={r.id} className="p-4 space-y-3">
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <p className="font-bold text-gray-900">Room {r.room_no} <span className="text-xs text-gray-500">· Floor {r.floor ?? "-"} · {String(r.sharing_type ?? "-")}-share · {r.rent ? formatINR(Number(r.rent)) : "-"}</span></p>
+                          <p className="text-xs text-gray-400">{r.id.slice(0, 8)} · {r.status ?? "vacant"} · {roomBeds.length} bed(s)</p>
+                        </div>
+                        <button onClick={() => handleDeleteRoom(r.id)} className="text-red-400 hover:text-red-600 p-1"><Trash2 size={16} /></button>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {roomBeds.map((b) => {
+                          const occupant = students.find((s) => s.id === b.student_id);
+                          return (
+                            <div key={b.id} className={`p-3 rounded-xl border flex flex-col gap-2 ${b.status === "occupied" ? "bg-emerald-50/50 border-emerald-200" : "bg-gray-50 border-gray-200"}`}>
+                              <div className="flex justify-between items-center">
+                                <span className="font-bold text-sm flex items-center gap-1"><BedDouble size={14} /> Bed {b.bed_no ?? b.id.slice(0, 4)}</span>
+                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${b.status === "occupied" ? "bg-emerald-100 text-emerald-700" : "bg-gray-200 text-gray-600"}`}>{b.status ?? (b.student_id ? "occupied" : "vacant")}</span>
+                              </div>
+                              {b.student_id && occupant ? (
+                                <div className="text-xs">
+                                  <p className="font-bold text-gray-900">{getStudentName(occupant)} · {getStudentPhone(occupant)}</p>
+                                  <button onClick={() => handleVacateBed(b.id)} className="mt-2 w-full bg-white border border-red-200 text-red-600 py-1.5 rounded-lg font-bold text-xs flex items-center justify-center gap-1"><XCircle size={12} /> Vacate</button>
+                                </div>
+                              ) : (
+                                <div className="flex gap-1.5">
+                                  <select id={`assign-${b.id}`} defaultValue="" className="flex-1 bg-white border border-gray-200 rounded-lg px-2 py-1.5 text-xs font-medium">
+                                    <option value="">Select student</option>
+                                    {students.filter((s) => !s.bed_id).map((s) => <option key={s.id} value={s.id}>{getStudentName(s)} · {getStudentPhone(s) || s.id.slice(0,4)}</option>)}
+                                    {(students.length===0||students.filter((s)=>!s.bed_id).length===0) && <option disabled>No unassigned students</option>}
+                                  </select>
+                                  <button onClick={() => {
+                                    const sel = document.getElementById(`assign-${b.id}`) as HTMLSelectElement | null;
+                                    if (sel?.value) handleAssignBed(b.id, sel.value);
+                                  }} className="bg-indigo-600 text-white px-3 py-1.5 rounded-lg font-bold text-xs flex items-center gap-1"><UserCheck size={12} /> Assign</button>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>}
             </div>
-            <div className="bg-white rounded-2xl border overflow-hidden">
-              <div className="p-4 border-b font-bold text-sm">Beds · {beds.length} total</div>
-              {beds.length === 0 ? <p className="p-6 text-sm text-gray-400 text-center">No beds.</p> : <div className="divide-y max-h-80 overflow-y-auto">
-                {beds.map((b) => (
-                  <div key={b.id} className="p-3 flex justify-between items-center text-sm">
-                    <span>Bed {b.bed_no ?? b.id.slice(0, 6)} · Room {b.room_id.slice(0, 6)}</span>
-                    <span className={`text-xs font-bold px-2 py-1 rounded ${b.status === "occupied" ? "bg-emerald-100 text-emerald-700" : b.status === "booked" ? "bg-amber-100 text-amber-700" : "bg-gray-100"}`}>{b.status ?? (b.student_id ? "occupied" : "vacant")}</span>
-                  </div>
-                ))}
-              </div>}
+          </div>
+        )}
+
+        {activeTab === "complaints" && (
+          <div className="space-y-4">
+            <div className="bg-white rounded-2xl border border-gray-100 p-4 flex flex-col sm:flex-row justify-between gap-3 items-start sm:items-center">
+              <h3 className="font-bold text-gray-900 flex items-center gap-2"><MessageSquare size={18} className="text-amber-500" /> Complaints · {filteredComplaints.length}</h3>
+              <div className="flex gap-2">
+                <select value={complaintFilter} onChange={(e) => setComplaintFilter(e.target.value)} className="bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-sm font-medium">
+                  <option value="all">All</option>
+                  <option value="open">Open</option>
+                  <option value="working">Working</option>
+                  <option value="resolved">Resolved</option>
+                </select>
+              </div>
             </div>
+            {filteredComplaints.length === 0 ? <p className="bg-white p-8 rounded-2xl text-center text-sm text-gray-400 border">No complaints in this filter.</p> : <div className="space-y-3">
+              {filteredComplaints.map((c) => (
+                <div key={c.id} className="bg-white rounded-2xl border border-gray-100 p-4 space-y-3">
+                  <div className="flex justify-between items-start gap-3">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-sm text-gray-900">{c.category ?? "General"}</span>
+                        <span className={`text-xs px-2 py-0.5 rounded-full font-bold capitalize ${c.status==="open"?"bg-amber-100 text-amber-700":c.status==="working"?"bg-blue-100 text-blue-700":"bg-emerald-100 text-emerald-700"}`}>{c.status}</span>
+                      </div>
+                      <p className="text-sm text-gray-700 mt-1">{c.description ?? "-"}</p>
+                      <p className="text-xs text-gray-400 mt-1">Student: {c.students?.name ?? c.student_id?.slice(0,6) ?? "-"} · {c.students?.phone ?? ""} · {new Date(c.created_at).toLocaleString()}</p>
+                      {c.assigned_to && <p className="text-xs text-indigo-600 mt-1">Assigned to: {c.assigned_to}</p>}
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {c.status === "open" && <button onClick={() => handleComplaintPatch(c.id, { status: "working" })} className="bg-blue-50 text-blue-700 border border-blue-200 px-3 py-1.5 rounded-xl text-xs font-bold">Mark Working</button>}
+                    {c.status !== "resolved" && <button onClick={() => handleComplaintPatch(c.id, { status: "resolved" })} className="bg-emerald-50 text-emerald-700 border border-emerald-200 px-3 py-1.5 rounded-xl text-xs font-bold">Mark Resolved</button>}
+                    {c.status === "resolved" && <button onClick={() => handleComplaintPatch(c.id, { status: "open" })} className="bg-amber-50 text-amber-700 border px-3 py-1.5 rounded-xl text-xs font-bold">Reopen</button>}
+                    <div className="flex items-center gap-1 ml-auto">
+                      <input id={`assign-c-${c.id}`} placeholder="Assign to" defaultValue={c.assigned_to ?? ""} className="bg-gray-50 border border-gray-200 rounded-lg px-2 py-1.5 text-xs w-28" />
+                      <button onClick={() => {
+                        const el = document.getElementById(`assign-c-${c.id}`) as HTMLInputElement | null;
+                        handleComplaintPatch(c.id, { assigned_to: el?.value?.trim() || "" });
+                      }} className="bg-gray-900 text-white px-3 py-1.5 rounded-lg text-xs font-bold">Assign</button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>}
+          </div>
+        )}
+
+        {activeTab === "enquiries" && (
+          <div className="space-y-4">
+            <div className="bg-white rounded-2xl border border-gray-100 p-4 flex justify-between items-center">
+              <h3 className="font-bold text-gray-900 flex items-center gap-2"><ClipboardList size={18} className="text-blue-500" /> Enquiries · {filteredEnquiries.length}</h3>
+              <select value={enquiryFilter} onChange={(e) => setEnquiryFilter(e.target.value)} className="bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-sm font-medium">
+                <option value="all">All</option>
+                <option value="pending">Pending</option>
+                <option value="contacted">Contacted</option>
+              </select>
+            </div>
+            {filteredEnquiries.length === 0 ? <p className="bg-white p-8 rounded-2xl text-center text-sm text-gray-400 border">No enquiries.</p> : <div className="space-y-3">
+              {filteredEnquiries.map((e) => (
+                <div key={e.id} className={`bg-white rounded-2xl border p-4 ${e.contacted ? "border-emerald-200 bg-emerald-50/20" : "border-gray-100"}`}>
+                  <div className="flex justify-between items-start gap-2">
+                    <div>
+                      <p className="font-bold text-sm text-gray-900">{e.name ?? "Anonymous"} <span className="text-xs font-normal text-gray-500">· {e.phone ?? "-"}</span></p>
+                      <p className="text-xs text-gray-500">{e.occupation ?? ""} {e.move_in ? `· Move-in ${new Date(e.move_in).toLocaleDateString()}` : ""} · {new Date(e.created_at).toLocaleDateString()}</p>
+                      <p className="text-sm text-gray-700 mt-2 bg-gray-50 border rounded-xl p-2">{e.message ?? "-"}</p>
+                    </div>
+                    <span className={`text-xs px-2 py-1 rounded-full font-bold ${e.contacted ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>{e.contacted ? "Contacted" : "Pending"}</span>
+                  </div>
+                  <div className="mt-3 flex gap-2">
+                    {!e.contacted ? <button onClick={() => handleEnquiryContacted(e.id, true)} className="bg-indigo-600 text-white px-4 py-1.5 rounded-xl text-xs font-bold">Mark Contacted</button> : <button onClick={() => handleEnquiryContacted(e.id, false)} className="bg-white border px-4 py-1.5 rounded-xl text-xs font-bold">Mark Pending</button>}
+                    {e.phone && <a href={`tel:${e.phone}`} className="bg-blue-50 text-blue-700 border border-blue-100 px-4 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1"><Phone size={12} /> Call</a>}
+                  </div>
+                </div>
+              ))}
+            </div>}
+          </div>
+        )}
+
+        {activeTab === "reviews" && (
+          <div className="space-y-4">
+            <div className="bg-white rounded-2xl border border-gray-100 p-4 flex justify-between items-center">
+              <h3 className="font-bold text-gray-900 flex items-center gap-2"><Star size={18} className="text-amber-500" /> Reviews · {filteredReviews.length}</h3>
+              <select value={reviewFilter} onChange={(e) => setReviewFilter(e.target.value)} className="bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-sm font-medium">
+                <option value="all">All</option>
+                <option value="approved">Approved</option>
+                <option value="pending">Pending</option>
+              </select>
+            </div>
+            {filteredReviews.length === 0 ? <p className="bg-white p-8 rounded-2xl text-center text-sm text-gray-400 border">No reviews.</p> : <div className="space-y-3">
+              {filteredReviews.map((r) => (
+                <div key={r.id} className={`bg-white rounded-2xl border p-4 ${r.approved ? "border-emerald-200" : "border-amber-200"}`}>
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <p className="font-bold text-sm text-gray-900">{r.name} <span className="text-amber-500">{"★".repeat(r.rating)}{"☆".repeat(5-r.rating)}</span> <span className="text-xs text-gray-500">({r.rating}/5)</span></p>
+                      <p className="text-xs text-gray-400">{new Date(r.created_at).toLocaleDateString()} · {r.source ?? "site"} · <span className={r.approved ? "text-emerald-600 font-bold" : "text-amber-600 font-bold"}>{r.approved ? "Approved" : "Pending"}</span></p>
+                    </div>
+                    <div className="flex gap-1.5">
+                      {!r.approved ? <button onClick={() => handleReviewApprove(r.id, true)} className="bg-emerald-50 text-emerald-700 border border-emerald-200 px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1"><Star size={12} /> Approve</button> : <button onClick={() => handleReviewApprove(r.id, false)} className="bg-amber-50 text-amber-700 border px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1"><StarOff size={12} /> Unapprove</button>}
+                      <button onClick={() => handleReviewDelete(r.id)} className="bg-red-50 text-red-600 border border-red-200 px-3 py-1.5 rounded-xl text-xs font-bold"><Trash2 size={12} /></button>
+                    </div>
+                  </div>
+                  <p className="text-sm text-gray-700 mt-2 bg-gray-50 border rounded-xl p-3">{r.text}</p>
+                </div>
+              ))}
+            </div>}
           </div>
         )}
       </div>
